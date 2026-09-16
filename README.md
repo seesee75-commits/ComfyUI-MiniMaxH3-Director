@@ -46,6 +46,10 @@ see the exact prompt the model will receive while you are still editing it.
 
 ## News
 
+**Unreleased** — an **image in the middle of the window is anchored where it sits** instead
+of being reported and dropped, a timeline video anchoring as a short clip and the audio track
+guiding the sound it fills; the canvas says which frame each one lands on.
+
 **0.3.2** · 2026-10-02 — a **voice clip on each subject** (issue #10): a button on the
 subject slot, no timeline lane, no render time. Two characters, two voices, one background track.
 
@@ -167,7 +171,9 @@ any OpenAI-compatible endpoint) with automatic VRAM release before a run.
 ## Requirements
 
 * **ComfyUI ≥ 0.30.0** — H3 support, `comfy_api.latest` and the packed AV latent all
-  landed in 0.30. Older builds will fail to load the nodes.
+  landed in 0.30. Older builds will fail to load the nodes. **0.34.0** adds the *Add Guide
+  for MiniMax H3* node, which is what anchors an image somewhere other than the first or
+  last frame; everything else works without it.
 * **Python 3.10+** (ComfyUI's own environment; the portable build's `python_embeded` is fine).
 * **No extra pip packages.** Everything the nodes import ships with ComfyUI already.
 * **VRAM:** the fp8 checkpoints are ~21 GB on disk. 16 GB VRAM works with ComfyUI's
@@ -759,9 +765,34 @@ mode**, via `POST /models/unload`. A plain `llama-server -m model.gguf` has no s
 endpoint — give it `--sleep-idle-seconds N` and it will let go by itself. LM Studio manages
 residency on its own.
 
-**Keyframes go on the first and last frame only.** H3's `PackedLayout` anchors exactly
-those two positions; an image stranded in the middle of a window is reported in the
-warnings rather than silently ignored.
+### Where a keyframe lands
+
+**An image is anchored at the frame it sits on.** The opening and the closing image have a
+slot of their own, and anything between them is sent as a guide conditioned at its own
+position — so an image you drop at 6 s is the frame at 6 s. The canvas badges it with the
+time it lands at (`⚓ 6.0s`), in the model's 24 fps rather than the timeline's rate, which is
+the one number the two clocks do not share.
+
+A **timeline video in the middle anchors as a clip**, not as a single frame. H3 takes a clip
+at its own lengths — 5, 22 or 39 frames — so the segment is cut down to the longest of those
+that fits, and it stops at 39: a guide is encoded at the full canvas and its latent is
+re-injected at every sampling step, which is the same bill a reference video pays.
+
+An image that lands on a frame already taken by the opening or closing one is not anchored,
+and says so in the warnings rather than arguing with it.
+
+With **Use audio track** on, a clip inside the window also **guides the sound** from the
+second it starts, as well as being mixed into `combined_audio` as it always was. That needs
+`minimax_h3_audio_vae` on the `audio_vae` input; without it the clip is still mixed, just not
+sent. Override Audio turns it off, the way it turns off everything else the track feeds. A clip
+set to **lock** is held in the audio stream instead and is not a guide.
+
+All of this needs **ComfyUI 0.34.0** for its *Add Guide for MiniMax H3* node. On an older
+build the middle images are reported in the warnings and ignored, exactly as they were
+before — and the live preview says the same thing the render does.
+
+None of it changes a word of the prompt: where an image is anchored is a fact about the
+conditioning, and the storyboard is written from the timeline either way.
 
 ## Prompt format
 

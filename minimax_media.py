@@ -235,11 +235,22 @@ async def compile_prompt_endpoint(request):
             warnings.append("%.1fs is past H3's trained range (the model card's 4-15s). It "
                             "renders, but expect drift or looping, and a render time that "
                             "climbs faster than the length." % p["actual_seconds"])
-        if not p["ref_mode_on"]:
-            middles = sum(1 for e in p["events"] if e["role"] == plan.ROLE_MIDDLE)
-            if middles:
-                warnings.append("%d image(s) in the middle are ignored — H3 only anchors the "
-                                "first and last frame. Switch to 'Refs ON (ref2va)'." % middles)
+        anchored = [e for e in p["events"] if e.get("anchor_frame") is not None]
+        if anchored or p.get("audio_anchors"):
+            # The preview must never promise an anchor the render will drop, so it asks the
+            # same question the node does — of the same core module, cached after the first
+            # call. Guarded because this endpoint otherwise touches nothing but the planner,
+            # and an install that cannot answer should still get its prompt.
+            try:
+                from . import minimax_core
+                have_guide = minimax_core.add_guide() is not None
+            except Exception:
+                have_guide = True
+            if not have_guide:
+                warnings.append(
+                    "%d image(s) in the middle are ignored — anchoring them needs ComfyUI "
+                    "0.34.0 and its 'Add Guide for MiniMax H3' node. Update ComfyUI, or "
+                    "switch to 'Refs ON (ref2va)'." % len(anchored))
         if p["ref_mode_on"] and len(p["ref_image_slots"]) >= plan.MAX_REF_IMAGES:
             warnings.append("Reference images are capped at %d." % plan.MAX_REF_IMAGES)
         # The batch on the ref_images socket only exists once the graph runs, so the
@@ -270,6 +281,12 @@ async def compile_prompt_endpoint(request):
             # the prompt does instead of counting slots and getting a different answer
             "subject_of_slot": {str(k): v for k, v in
                                 (p.get("subject_of_slot") or {}).items()},
+            # segment id -> the output frame it is anchored at, so the canvas can say where
+            # each one lands. The conversion stays here with the planner: a second copy of
+            # it in the editor is exactly the drift this endpoint exists to prevent.
+            "anchors": {str(e["seg"].get("id")): e["anchor_frame"] for e in anchored
+                        if e["seg"].get("id")},
+            "anchor_fps": plan.MODEL_FPS,
             "overridden": bool(p.get("prompt_overridden")),
             # what the timeline would produce, so the panel can offer it back without
             # having to recompile behind the user's back

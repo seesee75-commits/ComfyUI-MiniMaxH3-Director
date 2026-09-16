@@ -7295,6 +7295,33 @@ class TimelineEditor {
             this.ctx.restore();
           }
 
+          // --- Where an anchored image lands in the output ---
+          // Only the middle ones are badged: the first and last frame have slots of their
+          // own and are already read as such. In seconds, not frames, because the ruler
+          // above runs at the timeline's fps and this number is the model's own 24 — a bare
+          // frame count would be read against the wrong clock.
+          const anchorFrame = this.node?._mmxAnchors?.[seg.id];
+          if (anchorFrame !== undefined && anchorFrame !== null && pxWidth > 40) {
+            this.ctx.save();
+            this.ctx.beginPath();
+            this.ctx.rect(startX, RULER_HEIGHT, pxWidth, this.blockHeight);
+            this.ctx.clip();
+
+            this.ctx.font = "bold 9px sans-serif";
+            const anchorFps = this.node?._mmxAnchorFps || 24;
+            const anchorText = `⚓ ${(anchorFrame / anchorFps).toFixed(1)}s`;
+            const anchorW = this.ctx.measureText(anchorText).width + 10;
+            const anchorY = RULER_HEIGHT + 19;   // the row under IMAGE / the filename
+
+            this.ctx.fillStyle = "rgba(0, 0, 0, 0.60)";
+            this.ctx.fillRect(startX + 1, anchorY, anchorW, 16);
+            this.ctx.fillStyle = "#fff";
+            this.ctx.textAlign = "center";
+            this.ctx.textBaseline = "middle";
+            this.ctx.fillText(anchorText, startX + 1 + anchorW / 2, anchorY + 8);
+            this.ctx.restore();
+          }
+
           // --- Prompt subtitle overlay ---
           if (seg.prompt && seg.type !== "ghost" && pxWidth > 24) {
             const overlayH = Math.round(this.blockHeight * 0.20);
@@ -14255,7 +14282,9 @@ app.registerExtension({
         this._mmxSetPromptPreview = (enabled, initial) => {
           promptBox.style.display = enabled ? "flex" : "none";
           if (promptWidget.element) promptWidget.element.style.display = enabled ? "flex" : "none";
-          if (enabled) self._mmxRefreshPrompt();
+          // refreshed either way: the canvas badges anchors from the same answer, and a
+          // badge that only appears while the prompt panel is open reads as a bug
+          self._mmxRefreshPrompt();
           applyPanelHeight(!initial);
         };
 
@@ -14301,6 +14330,12 @@ app.registerExtension({
             // a reference image changes what it should say while it is already on screen.
             self._mmxSubjectOfSlot = d.subject_of_slot || {};
             self._timelineEditor?.refreshAudioSubjectMenu?.();
+            // segment id -> the output frame it is anchored at. The planner owns that
+            // conversion — the timeline runs at the editor's fps and the anchor at the
+            // model's 24 — and the canvas only draws the answer.
+            self._mmxAnchors = d.anchors || {};
+            self._mmxAnchorFps = d.anchor_fps || 24;
+            self._timelineEditor?.render?.();
             // Keep the textarea in step with what is stored, but never while it has the
             // caret — clobbering someone's sentence mid-word is unforgivable.
             if (d.overridden && document.activeElement !== pEdit
@@ -14323,6 +14358,10 @@ app.registerExtension({
             pWarn.style.display = (!pCollapsed && pWarn.textContent) ? "block" : "none";
           } catch (e) {
             pBadge.textContent = "preview unavailable";
+            // badges from a timeline that no longer compiles would keep naming frames
+            // nothing is anchored at any more
+            self._mmxAnchors = {};
+            self._timelineEditor?.render?.();
             pWarn.textContent = String(e.message || e);
             pWarn.style.display = pCollapsed ? "none" : "block";
           }

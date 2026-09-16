@@ -1,5 +1,36 @@
 # Changelog
 
+## Unreleased
+
+- **An image in the middle of the window is sent where it sits.** H3 gives the first and the
+  last frame a slot of its own, and for a long time that was the whole story: anything between
+  them had no position to be sent at, so it was counted in the warnings and dropped. A
+  three-beat timeline handed the model its opening and its closing frame and nothing in
+  between, and the only way to use the rest was to turn them into `<Picture i>` references,
+  which describe an image without placing it.
+
+  ComfyUI 0.34.0 added a node that conditions a guide at an arbitrary frame, and one is now
+  chained per stranded image, at the frame the timeline puts it on. A timeline video anchors as
+  a clip rather than a single frame — H3 takes 5, 22 or 39 frames, so the segment is cut to the
+  longest of those that fits, and stops at 39 because a guide latent is re-injected at every
+  sampling step. The canvas badges each one with the second it lands at, in the model's 24 fps
+  rather than the timeline's, since that is the number the two clocks disagree about.
+
+  Not a word of the prompt changes: where an image is anchored is a fact about the
+  conditioning, and the storyboard is written from the timeline either way.
+
+  On a ComfyUI older than 0.34.0 the node does not exist, the images are ignored as they were
+  before, and the warning names the version that adds it — in the live preview as well as in
+  the log, so the panel never promises an anchor the render will drop.
+
+- **The audio track guides the model, and not only the mixdown.** With **Use audio track** on
+  and `minimax_h3_audio_vae` connected, a clip inside the window is conditioned from the second
+  it starts as well as being mixed into `combined_audio`, which is what a line of dialogue
+  needs to land on the mouth that speaks it. Without the audio VAE the clip is mixed and not
+  sent, with a line saying which input is missing; with Override Audio the track is not the
+  soundtrack and is not a guide either, the way it already was not a reference. A clip set to
+  **lock** is held in the audio stream instead and is not a guide.
+
 ## 0.3.2
 
 **A voice on the subject, not on the timeline** (issue #10). Every subject slot has an

@@ -69,6 +69,17 @@ def core():
     return extra("nodes_minimax_h3", "MiniMaxH3ImageToVideo")
 
 
+def add_guide():
+    """The node that anchors a guide at an arbitrary frame, or None if core is too old.
+
+    'Add Guide for MiniMax H3' arrived in ComfyUI 0.34.0. The pack asks for 0.30.0, which
+    is the version H3 itself landed in, so an install without this node is a supported one
+    and has to render exactly as it did before rather than fail — the caller says which
+    version adds it instead.
+    """
+    return getattr(core(), "MiniMaxH3AddGuide", None)
+
+
 def samplers():
     """comfy_extras/nodes_custom_sampler.py — guiders, noise, SamplerCustomAdvanced."""
     return extra("nodes_custom_sampler", "SamplerCustomAdvanced")

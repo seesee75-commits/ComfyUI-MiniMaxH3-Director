@@ -47,6 +47,13 @@ ROLE_FIRST = "first"
 ROLE_LAST = "last"
 ROLE_MIDDLE = "middle"
 
+# A guide clip is VAE-encoded at the full canvas and its latent is re-injected at every
+# sampling step, the same bill a reference video pays — and every row it adds is a row the
+# DiT's full self-attention pays for quadratically. 39 frames is 1.6s at H3's own rate:
+# long enough to carry a movement, short enough that a clip does not cost more than the
+# window it sits in.
+MAX_ANCHOR_CLIP_FRAMES = 39
+
 # --- the full-reference vocabulary (references/ref-en.txt) ---------------------------
 # The retention markers are "fixed English values in the output format", so they are
 # emitted verbatim and never paraphrased. Whatever the editor sends is clamped back to a
@@ -1103,8 +1110,9 @@ def compile_storyboard(global_prompt, shots, total_seconds):
 def classify_events(events, duration_frames, fps):
     """Assign each main-track image/video segment its keyframe role.
 
-    H3's PackedLayout only anchors keyframes at frame 0 and frame_count-1, so a timeline
-    image is either the opening frame, the closing frame, or a reference.
+    The opening and the closing frame have a slot of their own in the core node, which is
+    what this decides. Everything else is a middle — a reference on the ref2va path, and a
+    guide anchored where it sits on the fl2va one (see anchor_events).
     """
     head_window_f = max(1.0, fps * 0.5)
     have_first = have_last = False
@@ -1127,6 +1135,61 @@ def classify_events(events, duration_frames, fps):
             continue
         ev["role"] = ROLE_MIDDLE
     return events
+
+
+def anchor_clip_frames(available):
+    """Longest guide clip that fits in `available` output frames.
+
+    H3 anchors a clip only at its own lengths — 5, 22, 39, 17k+5 — and a batch shorter than
+    five frames is taken as a single image, which is what 1 means here. Core crops a batch
+    the same way; the length is worked out on this side as well so the Director can check
+    the fit before it hands anything over, rather than finding out through a ValueError
+    with the models already in VRAM.
+    """
+    n = min(int(available), MAX_ANCHOR_CLIP_FRAMES)
+    if n < 5:
+        return 1
+    while n % 17 != 5:
+        n -= 1
+    return n
+
+
+def anchor_events(events, length, fps):
+    """Give every middle image the output frame it anchors at. Returns what was skipped.
+
+    The timeline runs at the editor's fps and the output at MODEL_FPS, over a length that
+    has been snapped *up* onto the 17k+5 grid, so the position is a rescale and a clamp.
+    Any integer index is legal — PackedLayout places a guide at a continuous position, not
+    on a grid — so only the clip length has to land on H3's own lengths.
+
+    The opening and closing frames are left alone: they already ride the core node's own
+    keyframe slots, and a second cond block on the same frame would only argue with them.
+    An image that resolves onto a frame already spoken for is skipped for the same reason,
+    and named, because dropping it in silence is what this feature exists to stop.
+    """
+    taken = set()
+    for ev in events:
+        if ev["role"] == ROLE_FIRST:
+            taken.add(0)
+        elif ev["role"] == ROLE_LAST:
+            taken.add(length - 1)
+
+    skipped = []
+    for ev in events:
+        if ev["role"] != ROLE_MIDDLE:
+            continue
+        idx = max(0, min(int(round(ev["rel_start_f"] / fps * MODEL_FPS)), length - 1))
+        if idx in taken:
+            skipped.append(ev)
+            continue
+        want = 1
+        if ev["kind"] == "video":
+            span = int(round((ev["rel_end_f"] - ev["rel_start_f"]) / fps * MODEL_FPS))
+            want = anchor_clip_frames(min(span, length - idx))
+        ev["anchor_frame"] = idx
+        ev["anchor_clip_frames"] = want
+        taken.add(idx)
+    return skipped
 
 
 def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
@@ -1455,11 +1518,14 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
                          if (s.get("audioFile") or s.get("audioB64"))
                          and not is_audio_lock(s)
                          and overlaps(s, win_start, win_end)]
-    if audio_on_timeline and not any(not s.get("voice_slot") for s in ref_audio_segs):
-        if not ref_mode_on:
-            why = "references are off (fl2va), which has no audio input at all"
-        else:
+    # On fl2va the track guides the model through frame anchors, further down.
+    audio_anchored = not ref_mode_on and use_custom_audio and not override_audio and not retake
+    if (audio_on_timeline and not audio_anchored
+            and not any(not s.get("voice_slot") for s in ref_audio_segs)):
+        if ref_mode_on or not use_custom_audio:
             why = "the audio track is switched off"
+        else:
+            why = "references are off (fl2va), which has no audio input at all"
         ref_warnings.append(
             "%d audio clip(s) on the timeline are not sent to the model: %s. They are only in "
             "`combined_audio`; wire that into CreateVideo to hear the clip itself, set the clip "
@@ -1533,6 +1599,47 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
     # *effective* duration, i.e. after snapping to the 17k+5 grid, not the window length.
     length = align_frame_count(max(5, int(round(window_seconds * MODEL_FPS))))
     actual_seconds = length / MODEL_FPS
+
+    # --- frame anchors (fl2va only) ---
+    # Computed here rather than with the events, because where an image lands is a position
+    # in the *output*, and the output's length is only known once the window has been
+    # snapped to the grid above.
+    #
+    # ref2va is left out on purpose. Its images are references, not keyframes: they are
+    # presented to the model as <Picture N> and the path has no frame to put them on. So the
+    # two modes still answer "what is this image" differently, and only one of them anchors.
+    audio_anchors = []
+    if not ref_mode_on and not retake:
+        for ev in anchor_events(events, length, fps):
+            ref_warnings.append(
+                "'%s' lands on a frame that is already the %s frame of the window, so it "
+                "was not anchored — move it, or take the other image off that frame."
+                % (seg_name(ev["seg"]),
+                   "last" if ev["rel_start_f"] > 0 else "first"))
+
+        # The audio track guides the model as well as filling combined_audio, on the same
+        # switch that governs it in ref2va — where it decides whether a clip becomes an
+        # <Audio j>. Without a switch of its own every timeline that has ever had a sound on
+        # it would start conditioning on it, which is a different render with nothing on
+        # screen to say why. Override Audio wins here as it does everywhere else: it is the
+        # answer to where the sound comes from, and the track is not it.
+        if use_custom_audio and not override_audio:
+            for seg in sorted((tdata.get("audioSegments", []) or []),
+                              key=lambda s: float(s.get("start", 0))):
+                if not (seg.get("audioFile") or seg.get("audioB64")) or is_audio_lock(seg):
+                    continue
+                if not overlaps(seg, win_start, win_end):
+                    continue
+                seg_start = float(seg.get("start", 0))
+                rel_start = max(0.0, seg_start - win_start)
+                audio_anchors.append({
+                    "seg": seg,
+                    # a clip that begins before the window is anchored at its first audible
+                    # frame, with the part already gone trimmed off the front
+                    "head_trim_f": max(0.0, win_start - seg_start),
+                    "anchor_frame": max(0, min(int(round(rel_start / fps * MODEL_FPS)),
+                                               length - 1)),
+                })
 
     # --- reference labels ---
     # Built after the caps have done their trimming, so every declaration describes a
@@ -1819,7 +1926,11 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
     if fallback:
         prompt = "video"
 
-    has_keyframe = any(ev["role"] in (ROLE_FIRST, ROLE_LAST) for ev in events) or bool(retake)
+    # An anchored image is a keyframe like any other — it is the same cond block at another
+    # position — so a window whose only image sits in the middle is fl2va, not t2va.
+    has_keyframe = (any(ev["role"] in (ROLE_FIRST, ROLE_LAST) for ev in events)
+                    or any(ev.get("anchor_frame") is not None for ev in events)
+                    or bool(audio_anchors) or bool(retake))
     mode = "ref2va" if ref_mode_on else ("fl2va" if has_keyframe else "t2va")
 
     return {
@@ -1835,6 +1946,10 @@ def plan_timeline(tdata, win_start, duration_frames, fps, global_prompt="",
         "ref_image_slots": ref_image_slots, "ref_notes": ref_notes,
         "ref_video_segs": ref_video_segs, "ref_audio_segs": ref_audio_segs,
         "lock_audio_segs": lock_audio_segs,
+        # Image anchors ride on the events themselves, as `anchor_frame` /
+        # `anchor_clip_frames`; the audio track has no event of its own, so its anchors are
+        # a list here. Both are empty on ref2va and in a retake.
+        "audio_anchors": audio_anchors,
         "ref_warnings": ref_warnings, "prompt_format": prompt_format,
         "description_words": description_words,
         "char_tag_values": char_tag_values,
