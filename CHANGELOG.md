@@ -23,10 +23,32 @@
   before, and the warning names the version that adds it — in the live preview as well as in
   the log, so the panel never promises an anchor the render will drop.
 
-- **The audio track guides the model, and not only the mixdown.** With **Use audio track** on
-  and `minimax_h3_audio_vae` connected, a clip inside the window is conditioned from the second
-  it starts as well as being mixed into `combined_audio`, which is what a line of dialogue
-  needs to land on the mouth that speaks it. Without the audio VAE the clip is mixed and not
+- **With references on, an image or a clip can be a frame of the video instead of a
+  reference.** ref2va has no first/last keyframe slot, so everything on the timeline was
+  described to the model rather than given to it: `<Picture 2> is the first frame of
+  [Shot 1].` says where an image belongs and hopes. Now the right-click menu's **Used as**
+  carries **frame anchor** alongside the old **reference frame**, and an image set to it is
+  sent as that frame, at the position it occupies — frame 0 for the one that opens the
+  window, the last frame for one flagged as an end frame. It stops being a `<Picture N>` at
+  the same time, because it is no longer something the model is only shown, and the entries
+  after it renumber.
+
+  The same menu is now on the reference tracks, where a clip is a **reference** or a **frame
+  anchor**: an anchored video is conditioned as a short clip at its own moment, an anchored
+  audio clip from the second it starts. Both then stop counting against the nine image,
+  three video and three audio reference slots, since the model is no longer being shown them
+  as references.
+
+  **The default is unchanged.** An image with no role set reads as **reference frame**, which
+  is what it compiled to before, so a saved workflow renders exactly as it did — anchoring is
+  something you ask for. A clip marked as an anchor has to sit inside the render window,
+  which is the one thing a reference never had to do: outside it there is no frame to anchor
+  at, and the warnings say so instead of dropping it.
+
+- **The audio track guides the model, and not only the mixdown.** With references off, **Use
+  audio track** on and `minimax_h3_audio_vae` connected, a clip inside the window is
+  conditioned from the second it starts as well as being mixed into `combined_audio`, which
+  is what a line of dialogue needs to land on the mouth that speaks it. Without the audio VAE the clip is mixed and not
   sent, with a line saying which input is missing; with Override Audio the track is not the
   soundtrack and is not a guide either, the way it already was not a reference. A clip set to
   **lock** is held in the audio stream instead and is not a guide.

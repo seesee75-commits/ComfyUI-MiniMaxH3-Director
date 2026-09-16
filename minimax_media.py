@@ -236,7 +236,8 @@ async def compile_prompt_endpoint(request):
                             "renders, but expect drift or looping, and a render time that "
                             "climbs faster than the length." % p["actual_seconds"])
         anchored = [e for e in p["events"] if e.get("anchor_frame") is not None]
-        if anchored or p.get("audio_anchors"):
+        clip_anchors = (p.get("video_anchors") or []) + (p.get("audio_anchors") or [])
+        if anchored or clip_anchors:
             # The preview must never promise an anchor the render will drop, so it asks the
             # same question the node does — of the same core module, cached after the first
             # call. Guarded because this endpoint otherwise touches nothing but the planner,
@@ -248,9 +249,10 @@ async def compile_prompt_endpoint(request):
                 have_guide = True
             if not have_guide:
                 warnings.append(
-                    "%d image(s) in the middle are ignored — anchoring them needs ComfyUI "
-                    "0.34.0 and its 'Add Guide for MiniMax H3' node. Update ComfyUI, or "
-                    "switch to 'Refs ON (ref2va)'." % len(anchored))
+                    "%d image(s) or clip(s) would be anchored, which needs ComfyUI 0.34.0 "
+                    "and its 'Add Guide for MiniMax H3' node. They are ignored: update "
+                    "ComfyUI, or set them back to references."
+                    % (len(anchored) + len(clip_anchors)))
         if p["ref_mode_on"] and len(p["ref_image_slots"]) >= plan.MAX_REF_IMAGES:
             warnings.append("Reference images are capped at %d." % plan.MAX_REF_IMAGES)
         # The batch on the ref_images socket only exists once the graph runs, so the
@@ -284,8 +286,8 @@ async def compile_prompt_endpoint(request):
             # segment id -> the output frame it is anchored at, so the canvas can say where
             # each one lands. The conversion stays here with the planner: a second copy of
             # it in the editor is exactly the drift this endpoint exists to prevent.
-            "anchors": {str(e["seg"].get("id")): e["anchor_frame"] for e in anchored
-                        if e["seg"].get("id")},
+            "anchors": {str(a["seg"].get("id")): a["anchor_frame"]
+                        for a in anchored + clip_anchors if a["seg"].get("id")},
             "anchor_fps": plan.MODEL_FPS,
             "overridden": bool(p.get("prompt_overridden")),
             # what the timeline would produce, so the panel can offer it back without
