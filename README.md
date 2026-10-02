@@ -46,6 +46,13 @@ see the exact prompt the model will receive while you are still editing it.
 
 ## News
 
+**Unreleased** — an **image in the middle of the window is anchored where it sits** instead
+of being reported and dropped, a timeline video anchoring as a short clip and the audio track
+guiding the sound it fills; the canvas says which frame each one lands on. With **Refs ON**
+an image, a reference video or an audio clip can be **set to frame anchor** in its
+right-click menu, which sends it as part of the video rather than describing it as a
+reference.
+
 **0.3.2** · 2026-10-02 — a **voice clip on each subject** (issue #10): a button on the
 subject slot, no timeline lane, no render time. Two characters, two voices, one background track.
 
@@ -167,7 +174,9 @@ any OpenAI-compatible endpoint) with automatic VRAM release before a run.
 ## Requirements
 
 * **ComfyUI ≥ 0.30.0** — H3 support, `comfy_api.latest` and the packed AV latent all
-  landed in 0.30. Older builds will fail to load the nodes.
+  landed in 0.30. Older builds will fail to load the nodes. **0.34.0** adds the *Add Guide
+  for MiniMax H3* node, which is what anchors an image somewhere other than the first or
+  last frame; everything else works without it.
 * **Python 3.10+** (ComfyUI's own environment; the portable build's `python_embeded` is fine).
 * **No extra pip packages.** Everything the nodes import ships with ComfyUI already.
 * **VRAM:** the fp8 checkpoints are ~21 GB on disk. 16 GB VRAM works with ComfyUI's
@@ -691,13 +700,19 @@ remembered per node.
 ### What an image is *for*
 
 The guide only gives an image its own `<Picture N>` entry when the image really is a
-frame. Right-click a timeline image to say which of the three it is:
+frame. Right-click a timeline image to say which of the four it is:
 
 | Used as | Result |
 |---|---|
-| **frame anchor** (default) | `<Picture 2> is the first frame of [Shot 1].` — an image opens its own shot, so this is what it is unless you flag the segment as an end frame; one with no text of its own is a composition anchor instead |
+| **reference frame** (default) | `<Picture 2> is the first frame of [Shot 1].` — an image opens its own shot, so this is what it is unless you flag the segment as an end frame; one with no text of its own is a composition anchor instead. The model is *told* the image is that frame |
+| **frame anchor** | No `<Picture>` entry. The image is *sent* as the frame instead, conditioned at the moment it sits on — see [Where a keyframe lands](#where-a-keyframe-lands) |
 | **storyboard** | `<Picture 3> is a storyboard reference for [Shot 2], defining its viewpoint, subject placement, and shot order.` |
 | **defines a subject** | No `<Picture>` entry at all. Cited inside a `<Subject N>` line instead, exactly as the guide requires for an image that "is used only to define a character, scene, costume, or style". |
+
+The same menu now appears on the reference tracks, where a clip is either a **reference**
+(the default: `<Video k>` / `<Audio j>`, shown to the model and never composited) or a
+**frame anchor** — part of the video, at the moment it sits on. An anchored clip stops being
+a reference, so it no longer spends one of the nine image / three video / three audio slots.
 
 A subject-only image also stops being a keyframe, so it is no longer fitted to the output
 canvas — the full reference reaches the model instead of a cropped one.
@@ -759,9 +774,49 @@ mode**, via `POST /models/unload`. A plain `llama-server -m model.gguf` has no s
 endpoint — give it `--sleep-idle-seconds N` and it will let go by itself. LM Studio manages
 residency on its own.
 
-**Keyframes go on the first and last frame only.** H3's `PackedLayout` anchors exactly
-those two positions; an image stranded in the middle of a window is reported in the
-warnings rather than silently ignored.
+### Where a keyframe lands
+
+**An image is anchored at the frame it sits on.** The opening and the closing image have a
+slot of their own, and anything between them is sent as a guide conditioned at its own
+position — so an image you drop at 6 s is the frame at 6 s. The canvas badges it with the
+time it lands at (`⚓ 6.0s`), in the model's 24 fps rather than the timeline's rate, which is
+the one number the two clocks do not share.
+
+That is **Refs OFF**, where an image has no other job to do. With **Refs ON** an image can
+be four things, so there you say which: set it to **frame anchor** in the right-click menu
+and it is sent as a frame, at frame 0 if it opens the window, at the last frame if you have
+flagged it as an end frame, and at its own position otherwise. Left on **reference frame**
+it compiles exactly as it always has, which is what a timeline saved before this existed
+still does. A **reference video or audio clip** can be marked the same way, and then it has
+to sit inside the window — outside it there is no frame to anchor at, and the preview says
+so rather than dropping it quietly.
+
+A **timeline video in the middle anchors as a clip**, not as a single frame. H3 takes a clip
+at its own lengths — 5, 22 or 39 frames — so the segment is cut down to the longest of those
+that fits, and it stops at 39: a guide is encoded at the full canvas and its latent is
+re-injected at every sampling step, which is the same bill a reference video pays.
+
+An image that lands on a frame already taken by the opening or closing one is not anchored,
+and says so in the warnings rather than arguing with it.
+
+The audio track **guides the sound** too, from the second a clip starts, as well as being
+mixed into `combined_audio` as it always was. With **Refs OFF** that is every clip inside
+the window, on the **Use audio track** switch — which until now did nothing on that path, so
+nothing starts conditioning on a sound you had not already asked to use. With **Refs ON** it
+is the clips you have set to frame anchor. Either way it needs `minimax_h3_audio_vae` on the
+`audio_vae` input; without it the clip is still mixed, just not sent. Override Audio turns it
+off, the way it turns off everything else the track feeds. A clip set to **lock** is held in
+the audio stream instead and is not a guide.
+
+All of this needs **ComfyUI 0.34.0** for its *Add Guide for MiniMax H3* node. On an older
+build the middle images are reported in the warnings and ignored, exactly as they were
+before — and the live preview says the same thing the render does.
+
+On **Refs OFF** none of this changes a word of the prompt: where an image is anchored is a
+fact about the conditioning, and the storyboard is written from the timeline either way. On
+**Refs ON** it does, and it should — an anchored image is no longer something the model is
+shown, so it has no `<Picture N>` entry to declare, and the entries after it renumber. The
+compiled prompt panel shows you that as you switch it.
 
 ## Prompt format
 

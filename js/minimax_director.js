@@ -944,10 +944,25 @@ const AUDIO_LOCK_OPTIONS = [
 ];
 
 const REF_ROLE_OPTIONS = [
+  // First is the fallback an unset segment reads as, so it stays the notation a timeline
+  // saved before anchoring existed was written against.
+  { value: "picture", label: "reference frame" },
   { value: "auto", label: "frame anchor" },
   { value: "storyboard", label: "storyboard" },
   { value: "subject", label: "defines a subject" },
 ];
+
+// The reference tracks answer a narrower question: a clip is either shown to the model or
+// part of the video it is asked to make.
+const CLIP_ROLE_OPTIONS = [
+  { value: "reference", label: "reference" },
+  { value: "auto", label: "frame anchor" },
+];
+
+const CLIP_ROLE_TIP =
+  "What this clip is for:\n" +
+  "reference — the model is shown it, and it never appears in the video\n" +
+  "frame anchor — it IS part of the video, at the moment it sits on the timeline";
 
 const RETENTION_TIP =
   "How closely the model follows this reference (guide 4.1):\n" +
@@ -971,7 +986,8 @@ const AUDIO_LOCK_TIP =
 
 const REF_ROLE_TIP =
   "What this image is for (guide 2.2):\n" +
-  "frame anchor — it IS a first/last frame or keyframe of its shot\n" +
+  "reference frame — it is DESCRIBED as a first/last frame or keyframe of its shot\n" +
+  "frame anchor — it IS that frame, and is sent as one at the moment it sits on\n" +
   "storyboard — it plans the shot's viewpoint and staging\n" +
   "defines a subject — it only defines a look, so it gets no <Picture> entry";
 
@@ -7295,6 +7311,10 @@ class TimelineEditor {
             this.ctx.restore();
           }
 
+          // the row under IMAGE / the filename
+          this.drawAnchorBadge(seg, startX, pxWidth, RULER_HEIGHT, this.blockHeight,
+                               RULER_HEIGHT + 19);
+
           // --- Prompt subtitle overlay ---
           if (seg.prompt && seg.type !== "ghost" && pxWidth > 24) {
             const overlayH = Math.round(this.blockHeight * 0.20);
@@ -7707,6 +7727,8 @@ class TimelineEditor {
             this.ctx.lineWidth = 1.5;
             this.ctx.strokeRect(startX, trackY + 1, pxWidth, this.motionTrackHeight - 2);
           }
+          this.drawAnchorBadge(seg, startX, pxWidth, trackY, this.motionTrackHeight,
+                               trackY + 2);
         }
         this.ctx.globalAlpha = 1.0;
       }
@@ -7744,6 +7766,8 @@ class TimelineEditor {
           const showHandles = !this.isMultiSelectActive();
           const outlineColor = isSelected ? "#fff" : null;
           this.drawAudioSegmentVisuals(this.ctx, seg, isSelected, trackY, this.audioTrackHeight, startX, pxWidth, outlineColor, showHandles);
+          this.drawAnchorBadge(seg, startX, pxWidth, trackY, this.audioTrackHeight,
+                               trackY + 2);
         }
         this.ctx.globalAlpha = 1.0;
       }
@@ -7971,6 +7995,33 @@ class TimelineEditor {
   }
 
 
+
+  // --- Where an anchored segment lands in the output ---
+  // Only anchored ones are badged, and the planner decides which those are: on the main
+  // track a middle image, on the reference tracks whatever is set to "frame anchor". In
+  // seconds, not frames, because the ruler runs at the timeline's fps and this number is
+  // the model's own 24 — a bare frame count would be read against the wrong clock.
+  drawAnchorBadge(seg, startX, pxWidth, clipY, clipH, badgeY) {
+    const anchorFrame = this.node?._mmxAnchors?.[seg.id];
+    if (anchorFrame === undefined || anchorFrame === null || pxWidth <= 40) return;
+    this.ctx.save();
+    this.ctx.beginPath();
+    this.ctx.rect(startX, clipY, pxWidth, clipH);
+    this.ctx.clip();
+
+    this.ctx.font = "bold 9px sans-serif";
+    const anchorFps = this.node?._mmxAnchorFps || 24;
+    const text = `⚓ ${(anchorFrame / anchorFps).toFixed(1)}s`;
+    const badgeW = this.ctx.measureText(text).width + 10;
+
+    this.ctx.fillStyle = "rgba(0, 0, 0, 0.60)";
+    this.ctx.fillRect(startX + 1, badgeY, badgeW, 16);
+    this.ctx.fillStyle = "#fff";
+    this.ctx.textAlign = "center";
+    this.ctx.textBaseline = "middle";
+    this.ctx.fillText(text, startX + 1 + badgeW / 2, badgeY + 8);
+    this.ctx.restore();
+  }
 
   drawAudioSegmentVisuals(ctx, seg, isSelected, yOffset, trackHeight, startX, pxWidth, outlineColor = null, showHandles = true) {
     ctx.fillStyle = isSelected ? "#2a4a3a" : "#1a2a1a";
@@ -11558,7 +11609,7 @@ class TimelineEditor {
         return btn;
       };
       if (trackType === "image" && (seg.type === "image" || seg.type === "video")) {
-        refBtns.push(cycler("Used as", REF_ROLE_OPTIONS, "refRole", "auto", REF_ROLE_TIP));
+        refBtns.push(cycler("Used as", REF_ROLE_OPTIONS, "refRole", "picture", REF_ROLE_TIP));
         // Only meaningful once the image defines something rather than anchoring a frame:
         // it picks the noun the <Subject N> line uses. Built either way and shown on
         // demand, so cycling the role reveals it without reopening the menu. A slot in
@@ -11573,9 +11624,13 @@ class TimelineEditor {
         refBtns.push(cycler("Follow it", RETENTION_OPTIONS, "retention",
                             "fully_preserved", RETENTION_TIP));
       } else if (trackType === "motion") {
+        refBtns.push(cycler("Used as", CLIP_ROLE_OPTIONS, "refRole", "reference",
+                            CLIP_ROLE_TIP));
         refBtns.push(cycler("Follow it", RETENTION_OPTIONS, "retention",
                             "fully_preserved", RETENTION_TIP));
       } else if (trackType === "audio") {
+        refBtns.push(cycler("Used as", CLIP_ROLE_OPTIONS, "refRole", "reference",
+                            CLIP_ROLE_TIP));
         refBtns.push(cycler("Audio use", RETENTION_AUDIO_OPTIONS, "retention",
                             "reference", RETENTION_AUDIO_TIP));
       }
@@ -14255,7 +14310,9 @@ app.registerExtension({
         this._mmxSetPromptPreview = (enabled, initial) => {
           promptBox.style.display = enabled ? "flex" : "none";
           if (promptWidget.element) promptWidget.element.style.display = enabled ? "flex" : "none";
-          if (enabled) self._mmxRefreshPrompt();
+          // refreshed either way: the canvas badges anchors from the same answer, and a
+          // badge that only appears while the prompt panel is open reads as a bug
+          self._mmxRefreshPrompt();
           applyPanelHeight(!initial);
         };
 
@@ -14301,6 +14358,12 @@ app.registerExtension({
             // a reference image changes what it should say while it is already on screen.
             self._mmxSubjectOfSlot = d.subject_of_slot || {};
             self._timelineEditor?.refreshAudioSubjectMenu?.();
+            // segment id -> the output frame it is anchored at. The planner owns that
+            // conversion — the timeline runs at the editor's fps and the anchor at the
+            // model's 24 — and the canvas only draws the answer.
+            self._mmxAnchors = d.anchors || {};
+            self._mmxAnchorFps = d.anchor_fps || 24;
+            self._timelineEditor?.render?.();
             // Keep the textarea in step with what is stored, but never while it has the
             // caret — clobbering someone's sentence mid-word is unforgivable.
             if (d.overridden && document.activeElement !== pEdit
@@ -14323,6 +14386,10 @@ app.registerExtension({
             pWarn.style.display = (!pCollapsed && pWarn.textContent) ? "block" : "none";
           } catch (e) {
             pBadge.textContent = "preview unavailable";
+            // badges from a timeline that no longer compiles would keep naming frames
+            // nothing is anchored at any more
+            self._mmxAnchors = {};
+            self._timelineEditor?.render?.();
             pWarn.textContent = String(e.message || e);
             pWarn.style.display = pCollapsed ? "none" : "block";
           }
