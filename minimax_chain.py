@@ -17,6 +17,11 @@ Two things would have to change before this ships again:
      Director's canvas settings. Long-form video deserves its own interaction model
      rather than being bolted onto this one.
 
+Frame anchors are deliberately not here either: this node still resolves a timeline image
+to first_frame / last_frame and nothing else, the way the Director did before it learned to
+anchor a middle one. Adding them to a node no one can hand a timeline to would be code that
+cannot be run, let alone tested.
+
 Seam quality is also resolution-bound: measured error at the join was 5.2x the median
 frame-to-frame difference at 480x288, and 2.3x at 1024x576.
 

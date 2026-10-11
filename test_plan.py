@@ -52,6 +52,17 @@ def img(start, length, name="a.png", prompt="", end_frame=False, **extra):
     return d
 
 
+def anc(start, length, name="a.png", prompt="", end_frame=False, **extra):
+    """An image set to 'frame anchor': sent as a frame of the video rather than described.
+
+    The default is the other answer — 'reference frame', the <Picture N> notation every
+    wording check below is about — because that is what a timeline written before anchoring
+    existed was asking for.
+    """
+    extra.setdefault("refRole", plan.REF_ROLE_AUTO)
+    return img(start, length, name, prompt, end_frame, **extra)
+
+
 def tl(segments, ref_mode="OFF", **extra):
     d = {"reference_mode": ref_mode, "prompt_format": "minimax",
          "global_prompt": "a woman walks through a market", "segments": segments}
@@ -102,6 +113,183 @@ check("isEndFrame wins over position",
 check("a third image in the middle stays a middle",
       roles(compile(tl([img(0, 96, "a.png"), img(96, 96, "b.png"), img(192, 96, "c.png")]))),
       [plan.ROLE_FIRST, plan.ROLE_MIDDLE, plan.ROLE_LAST])
+
+# ---------------------------------------------------------------- frame anchors
+# A middle is no longer a dead end: it is anchored at the output frame it sits on, through
+# core's Add Guide node. The role it was given above does not change — only what is done
+# with it — so every check up to here still describes the same planner.
+anchors = lambda p: [e.get("anchor_frame") for e in p["events"]]
+clips = lambda p: [e.get("anchor_clip_frames") for e in p["events"]]
+
+
+def vid(start, length, name="v.mp4", **extra):
+    d = img(start, length, name, **extra)
+    d["type"] = "video"
+    return d
+
+
+def aud(start, length, name="v.wav", **extra):
+    d = {"type": "audio", "start": start, "length": length, "audioFile": name,
+         "fileName": name}
+    d.update(extra)
+    return d
+
+
+def ev(role, start_f, end_f, kind="image", name="m.png"):
+    return {"seg": {"fileName": name}, "rel_start_f": start_f, "rel_end_f": end_f,
+            "kind": kind, "role": role, "is_end": False}
+
+
+check("a batch under five frames is one image", plan.anchor_clip_frames(4), 1)
+check("nothing to anchor is still one image", plan.anchor_clip_frames(0), 1)
+check("five frames is the shortest clip", plan.anchor_clip_frames(5), 5)
+check("21 frames falls back to 5", plan.anchor_clip_frames(21), 5)
+check("22 is on the grid", plan.anchor_clip_frames(22), 22)
+check("a long clip stops at the cap",
+      plan.anchor_clip_frames(500), plan.MAX_ANCHOR_CLIP_FRAMES)
+check("the cap is itself a legal length",
+      plan.MAX_ANCHOR_CLIP_FRAMES % 17, 5)
+
+three = tl([img(0, 96, "a.png"), img(96, 96, "b.png"), img(192, 96, "c.png")])
+check("the opening and closing frames carry no anchor of their own",
+      [anchors(compile(three))[0], anchors(compile(three))[2]], [None, None])
+check("a middle is anchored at its own position", anchors(compile(three))[1], 96)
+check("a still anchors one frame", clips(compile(three))[1], 1)
+check("an image with nothing but middles still makes the window fl2va",
+      compile(tl([img(120, 48, "m.png")]))["mode"], "fl2va")
+# refs on anchors too, but only what the user called a frame anchor — and with no
+# first/last slot to defer to, the opening image is anchored at frame 0 and an end frame at
+# the last one, rather than being left to the core node the way fl2va leaves them.
+check("refs on anchors every frame anchor, ends included",
+      anchors(compile(tl([anc(0, 96, "a.png"), anc(96, 96, "b.png"),
+                          anc(192, 96, "c.png")], ref_mode="ON"))),
+      [0, 96, 293])
+check("a reference frame is described rather than anchored, and it is the default",
+      anchors(compile(tl([img(0, 96, "a.png"), img(96, 96, "b.png"),
+                          img(192, 96, "c.png")], ref_mode="ON"))),
+      [None, None, None])
+check("...and a storyboard image is neither anchored nor a frame",
+      anchors(compile(tl([img(0, 96, "a.png", refRole="storyboard")], ref_mode="ON"))),
+      [None])
+
+# The timeline runs at the editor's rate and the anchor at the model's 24, so the position
+# is a rescale, not a copy: 120 frames into a 30fps timeline is 4s, which is frame 96.
+thirty = plan.plan_timeline(tl([img(0, 120, "a.png"), img(120, 120, "b.png"),
+                                img(240, 120, "c.png")]), 0, 360, 30.0)
+check("an anchor is rescaled to the model's frame rate", anchors(thirty)[1], 96)
+
+check("a timeline video anchors as a clip",
+      clips(compile(tl([img(0, 96, "a.png"), vid(96, 96), img(192, 96, "c.png")])))[1],
+      plan.MAX_ANCHOR_CLIP_FRAMES)
+check("a video too short for a clip anchors as one frame",
+      clips(compile(tl([img(0, 96, "a.png"), vid(96, 3), img(192, 96, "c.png")])))[1], 1)
+check("a video anchors a clip cut to one of H3's own lengths",
+      clips(compile(tl([img(0, 96, "a.png"), vid(96, 12), img(192, 96, "c.png")])))[1], 5)
+
+# anchor_events is exercised directly for the two guards no timeline can reach: the window
+# is always shorter than the length it snaps up to, so neither the clamp nor the tail cut
+# can fire through plan_timeline.
+clamped = [ev(plan.ROLE_MIDDLE, 400, 401)]
+plan.anchor_events(clamped, 294, FPS)
+check("an anchor past the end lands on the last frame", clamped[0]["anchor_frame"], 293)
+
+tail = [ev(plan.ROLE_MIDDLE, 280, 400, kind="video")]
+plan.anchor_events(tail, 294, FPS)
+check("a clip is cut to the room left after it", tail[0]["anchor_clip_frames"], 5)
+
+collide = [ev(plan.ROLE_FIRST, 0, 10, name="a.png"), ev(plan.ROLE_MIDDLE, 0, 10, name="b.png")]
+skipped = plan.anchor_events(collide, 294, FPS)
+check("an image on a frame that is already spoken for is not anchored",
+      collide[1].get("anchor_frame"), None)
+check("and it is named rather than dropped in silence",
+      [s["seg"]["fileName"] for s in skipped], ["b.png"])
+
+# --- the reference tracks can be anchored too, one clip at a time
+def mot(start, length, name="v.mp4", **extra):
+    d = {"videoFile": name, "fileName": name, "start": start, "length": length}
+    d.update(extra)
+    return d
+
+
+ref_tracks = lambda **kw: compile(
+    tl([], ref_mode="ON",
+       motionSegments=[mot(24, 96, "ref.mp4", **kw)],
+       audioSegments=[aud(48, 96, "ref.wav", **kw)]),
+    use_custom_audio=True)
+
+plain = ref_tracks()
+check("a reference clip is a reference until it is called a frame anchor",
+      (len(plain["ref_video_segs"]), len(plain["ref_audio_segs"]),
+       plain["video_anchors"], plain["audio_anchors"]), (1, 1, [], []))
+
+marked = ref_tracks(refRole="auto")
+check("a clip marked frame anchor leaves the reference payload",
+      (len(marked["ref_video_segs"]), len(marked["ref_audio_segs"])), (0, 0))
+check("a reference video anchors at its own frame, as a clip",
+      [(a["anchor_frame"], a["anchor_clip_frames"]) for a in marked["video_anchors"]],
+      [(24, plan.MAX_ANCHOR_CLIP_FRAMES)])
+check("a reference audio anchors at its own frame",
+      [a["anchor_frame"] for a in marked["audio_anchors"]], [48])
+
+parked = compile(tl([], ref_mode="ON",
+                    motionSegments=[mot(600, 96, "late.mp4", refRole="auto")]))
+check("a parked clip cannot be anchored — there is no frame out there",
+      (parked["video_anchors"], len(parked["ref_video_segs"])), ([], 0))
+check("...and it says so rather than going quiet",
+      any("no frame to anchor it at" in w for w in parked["ref_warnings"]), True)
+
+check("refs off leaves the reference tracks alone",
+      compile(tl([], motionSegments=[mot(24, 96, "ref.mp4", refRole="auto")]))["video_anchors"],
+      [])
+
+# --- the audio track guides as well as fills the mixdown
+audio_at = lambda p: [a["anchor_frame"] for a in p["audio_anchors"]]
+check("the track is not a guide until it is switched on",
+      compile(tl([], audioSegments=[aud(48, 96)]))["audio_anchors"], [])
+check("a clip anchors at the second it starts",
+      audio_at(compile(tl([], audioSegments=[aud(48, 96)]), use_custom_audio=True)), [48])
+check("Override Audio takes the track out of the guides too",
+      compile(tl([], audioSegments=[aud(48, 96)]),
+              use_custom_audio=True, override_audio=True)["audio_anchors"], [])
+check("refs on routes the track to <Audio N> instead",
+      compile(tl([], ref_mode="ON", audioSegments=[aud(48, 96)]),
+              use_custom_audio=True)["audio_anchors"], [])
+locked = compile(tl([], audioSegments=[aud(48, 96), dict(aud(0, 48), retention="lock")]),
+                 use_custom_audio=True)
+check("a locked clip is held in the audio stream, not anchored as well",
+      (audio_at(locked), len(locked["lock_audio_segs"])), ([48], 1))
+head = plan.plan_timeline(tl([], audioSegments=[aud(0, 96)]), 24, 288, FPS,
+                          use_custom_audio=True)["audio_anchors"]
+check("a clip that begins before the window anchors at its first audible frame",
+      [(a["anchor_frame"], a["head_trim_f"]) for a in head], [(0, 24.0)])
+
+# --- anchoring is a conditioning fact and nothing else
+# Whole strings, not fragments: the point is that not one character of the prompt moved,
+# which a substring check cannot say. Harvested before the anchor pass existed.
+anchored_tl = tl([img(0, 96, "a.png", prompt="she enters"),
+                  img(96, 96, "b.png", prompt="she turns"),
+                  img(192, 96, "c.png", prompt="she leaves")])
+check("anchoring does not touch the fl2va prompt",
+      compile(anchored_tl)["prompt"],
+      "How the reference pictures align with the target video — Picture 1 (from Shot 1) "
+      "aligns with the 0.00-second mark of the target video; Picture 2 (from Shot 3) aligns "
+      "with the 12.25-second mark of the target video.\n\nintegrated_multimodal_description: "
+      "a woman walks through a market [Shot 1] she enters [Shot 2] At 00:04.000, she turns "
+      "[Shot 3] At 00:08.000, she leaves\n\nnon_diegetic_music: N/A")
+check("and it does not touch the ref2va prompt either",
+      compile(tl([img(0, 96, "a.png", prompt="she enters"),
+                  img(96, 96, "b.png", prompt="she turns"),
+                  img(192, 96, "c.png", prompt="she leaves")], ref_mode="ON"))["prompt"],
+      "subject_definitions:\n<Picture 1> is the first frame of [Shot 1].\n<Picture 2> is the "
+      "first frame of [Shot 2].\n<Picture 3> is the first frame of [Shot 3].\n\nsummary: "
+      "[keyframe completion]\n\nretention_analysis:\n<Picture 1> ([Shot 1] first frame): "
+      "fully_preserved - the framing and composition of <Picture 1> are retained.\n<Picture 2> "
+      "([Shot 2] first frame): fully_preserved - the framing and composition of <Picture 2> "
+      "are retained.\n<Picture 3> ([Shot 3] first frame): fully_preserved - the framing and "
+      "composition of <Picture 3> are retained.\n\ndetailed_description: a woman walks through "
+      "a market [Shot 1] she enters. The shot begins from <Picture 1>. [Shot 2] At 00:04.000, "
+      "she turns. The shot begins from <Picture 2>. [Shot 3] At 00:08.000, she leaves. The "
+      "shot begins from <Picture 3>.\n\nnon_diegetic_music: N/A")
 
 # ------------------------------------------------- issue #4: ref2va wording
 # The reference guide gives the phrasing for concrete frame anchors verbatim: "the shot
@@ -911,12 +1099,22 @@ check_not_in("a subject-only image earns no standalone picture entry",
 check_in("a subject-only image keeps its own retention note as well as its description",
          "<Subject 1>: fully_preserved - the cut and the brass buttons are kept.",
          subj_role["prompt"])
-check("a subject-only image is no longer a keyframe",
-      subj_role["ref_image_slots"][1].get("keyframe"), None)
-check("...while an untouched image still is",
-      subj_role["ref_image_slots"][0].get("keyframe"), plan.ROLE_FIRST)
-check("an unknown role falls back to the timeline's own reading",
-      plan.sanitize_ref_role("interpretive"), plan.REF_ROLE_AUTO)
+# "frame anchor" is the default, and it means the image is a frame of the video rather
+# than something the model is shown — so it spends no reference slot, and the only slot
+# here belongs to the image that was given another job.
+# An image set to frame anchor is a frame of the video, so it spends no reference slot:
+# the only slot left is the one image that was given another job.
+anchored_subj = compile(tl([anc(0, 144, "a.png", prompt="she enters"),
+                            img(144, 144, "coat.png", prompt="a wide shot", refRole="subject",
+                                refKind="clothing", refDesc="a long red wool coat")],
+                           ref_mode="ON"))
+check("an image set to frame anchor takes no reference slot",
+      [s["ref_role"] for s in anchored_subj["ref_image_slots"]], [plan.REF_ROLE_SUBJECT])
+check("...and is anchored instead", anchors(anchored_subj), [0, None])
+check("an unknown role falls back to the notation a saved timeline was written against",
+      plan.sanitize_ref_role("interpretive"), plan.REF_ROLE_PICTURE)
+check("and so does a timeline that predates the setting entirely",
+      plan.sanitize_ref_role(None), plan.REF_ROLE_PICTURE)
 
 # ------------------------------------------------- summary task types
 prefix = lambda p: p["prompt"].split("summary: ")[1].split("\n")[0] if "summary: " in p["prompt"] else ""
@@ -1404,10 +1602,15 @@ check("...and it is not the 'video' fallback",
 aud = {"type": "audio", "start": 0, "length": 120, "audioFile": "v.wav", "fileName": "v.wav"}
 warn = lambda **kw: " ".join(compile(tl([img(0, 144, prompt="she speaks")], audioSegments=[aud]), **kw)["ref_warnings"])
 check("Refs OFF names the audio clip as unsent", "not sent to the model" in warn(), True)
-check("...and says why", "fl2va" in warn(), True)
+check("...and says why", "audio track is switched off" in warn(), True)
+check("Refs OFF with the audio track on anchors it, so no such warning",
+      "not sent to the model" in warn(use_custom_audio=True), False)
 check("Refs ON with the audio track off says the track is off",
       "audio track is switched off" in " ".join(compile(tl([img(0, 144)], ref_mode="REF2VA",
                                                          audioSegments=[aud]))["ref_warnings"]), True)
+check("Refs ON with the clip set to frame anchor sends it as a frame, so no such warning",
+      "not sent to the model" in " ".join(compile(tl([img(0, 144)], ref_mode="REF2VA",
+          audioSegments=[dict(aud, refRole="auto")]), use_custom_audio=True)["ref_warnings"]), False)
 check("Refs ON with the audio track on sends it, so no such warning",
       "not sent to the model" in " ".join(compile(tl([img(0, 144)], ref_mode="REF2VA",
           audioSegments=[aud]), use_custom_audio=True)["ref_warnings"]), False)

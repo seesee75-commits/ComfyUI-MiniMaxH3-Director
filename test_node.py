@@ -387,6 +387,68 @@ check("the real output directory is restored", folder_paths.get_output_directory
       _real_output)
 
 
+# ------------------------------------------------------------- anchoring guides
+# anchor_guides is the one place a bad number becomes a dead render: core answers a guide
+# that does not fit with a ValueError, thrown after both checkpoints are in VRAM. So what
+# is pinned here is that nothing it is handed can get that far.
+check("add_guide() answers with core's node or with None, never an AttributeError",
+      package.minimax_core.add_guide() is getattr(package.minimax_core.core(),
+                                                  "MiniMaxH3AddGuide", None), True)
+
+
+class _FakeGuide:
+    """Stands in for core's Add Guide: records the call and hands the conditioning back."""
+    calls = []
+
+    @staticmethod
+    def execute(positive, latent, frame_idx, vae=None, audio_vae=None, image=None, audio=None):
+        _FakeGuide.calls.append((frame_idx, None if image is None else int(image.shape[0])))
+        return (positive,)
+
+
+class _RaisingGuide:
+    @staticmethod
+    def execute(**_):
+        raise ValueError("frame_idx 999 is outside the video's 294 frames")
+
+
+def anchor(role_frame, clip_frames, frames, kind="video", name="v.mp4"):
+    return {"seg": {"fileName": name}, "kind": kind, "anchor_frame": role_frame,
+            "anchor_clip_frames": clip_frames, "tensor": torch.zeros((frames, 8, 8, 3))}
+
+
+_FakeGuide.calls = []
+cond = director.anchor_guides(
+    _FakeGuide, "COND", "LATENT",
+    # 294 - 280 leaves 14 frames, so a 39-frame clip has to come back down to 5
+    [anchor(280, 39, 240), anchor(96, 1, 1, kind="image", name="a.png")],
+    [], lambda t: t, vae=None, audio_vae=None, length=294, fps=24.0)
+check("a clip is cut to the room left after its anchor", _FakeGuide.calls[0], (280, 5))
+check("a still anchors one frame", _FakeGuide.calls[1], (96, 1))
+check("the conditioning comes back out", cond, "COND")
+
+_FakeGuide.calls = []
+cond = director.anchor_guides(
+    _FakeGuide, "COND", "LATENT",
+    # the planner's clip length outruns what actually decoded: a file that ended early
+    [anchor(96, 39, 7)],
+    [], lambda t: t, vae=None, audio_vae=None, length=294, fps=24.0)
+check("a clip no longer than the decode is cut to that", _FakeGuide.calls, [(96, 5)])
+
+cond = director.anchor_guides(
+    _RaisingGuide, "COND", "LATENT", [anchor(96, 1, 1, kind="image")],
+    [], lambda t: t, vae=None, audio_vae=None, length=294, fps=24.0)
+check("a guide core refuses costs the guide and not the render", cond, "COND")
+
+_FakeGuide.calls = []
+cond = director.anchor_guides(
+    _FakeGuide, "COND", "LATENT", [],
+    [{"seg": {"audioFile": "v.wav"}, "anchor_frame": 48, "head_trim_f": 0.0}],
+    lambda t: t, vae=None, audio_vae=None, length=294, fps=24.0)
+check("audio with no audio VAE is skipped rather than raised", _FakeGuide.calls, [])
+check("...and the video conditioning is handed back untouched", cond, "COND")
+
+
 # ------------------------------------------------------------------- report
 failed = [r for r in _results if not r[0]]
 for ok, name, got, want in _results:

@@ -12,9 +12,12 @@ conditions completely differently from LTX 2.3:
   into that storyboard form — the model's own native mechanism for timed control,
   and exactly what the official H3 templates do.
 
-* Keyframes: H3's PackedLayout only accepts anchors at frame 0 and frame_count-1, so
-  timeline images resolve to first_frame / last_frame. Images in the middle become
-  <Picture i> references instead (ref2va), the closest thing H3 offers.
+* Keyframes: on fl2va the opening and closing image resolve to first_frame / last_frame and
+  anything between them is anchored where it sits, through core's Add Guide node (ComfyUI
+  0.34.0+) — a timeline video as a short clip rather than a single frame. ref2va has no
+  keyframe slot at all, so there an image is a <Picture i> reference unless the user marks
+  it a frame anchor, which sends it as a frame instead; a reference video or audio clip can
+  be marked the same way.
 
 * Audio: H3 generates native stereo audio jointly with the video. A timeline audio clip
   can be used three ways, chosen per clip: as an <Audio j> reference (the retention marker
@@ -43,7 +46,7 @@ from comfy_api.latest import io
 
 from . import minimax_media as media
 from . import minimax_plan as plan
-from .minimax_core import core
+from .minimax_core import add_guide, core
 
 log = logging.getLogger(__name__)
 
@@ -262,6 +265,103 @@ def load_ref_image_tensors(slots, fit, ref_images=None):
             else:
                 tensors.append(tensor[:1])
     return tensors
+
+
+def load_clip_anchors(video_anchors, fps, win_start):
+    """Decode the reference-track clips that were marked as frame anchors.
+
+    A reference video is normally decoded small — 768 short edge, or whatever the clip's own
+    refSize says — because it is shown to the model rather than composited. An anchored one
+    is a piece of the video, so it is decoded the way a main-track segment is and fitted to
+    the canvas afterwards.
+    """
+    loaded = []
+    for anchor in video_anchors:
+        seg = anchor["seg"]
+        want = anchor.get("anchor_clip_frames") or 1
+        trim = (float(seg.get("trimStart", 0)) + float(anchor["head_trim_f"])) / fps
+        tensor = media.load_video_tensor(seg.get("videoFile", ""), trim, want / MODEL_FPS)
+        if tensor is None or not tensor.shape[0]:
+            continue                       # load_video_tensor has already said why
+        loaded.append({"seg": seg, "kind": "video", "tensor": tensor,
+                       "anchor_frame": anchor["anchor_frame"],
+                       "anchor_clip_frames": want})
+    return loaded
+
+
+def anchor_guides(guide, conditioning, latent, anchors, audio_anchors,
+                  fit, vae, audio_vae, length, fps):
+    """Chain one 'Add Guide for MiniMax H3' per anchored segment onto fl2va conditioning.
+
+    Core answers a guide that does not fit with a ValueError, which arrives after both
+    models are in VRAM and takes the whole render with it. So every bound it checks is
+    checked here first, on the planner's own numbers — and anything that still goes wrong
+    costs that one guide and a line in the log, never the render.
+
+    The tensor is sliced before it is fitted, not after: a ten-second clip decodes to 240
+    frames and only the first few are anchored, so fitting first would resize 240 images to
+    throw all but five away.
+    """
+    for ev in anchors:
+        idx = int(ev["anchor_frame"])
+        tensor = ev["tensor"]
+        want = ev.get("anchor_clip_frames") or 1
+        # _load_event_tensor decodes the whole segment, trimmed at the head but not at the
+        # tail, so a clip that runs past the end of the window arrives longer than the room
+        # left for it. The planner capped `want` against the window; this caps it against
+        # what actually decoded.
+        want = min(want, int(tensor.shape[0]))
+        if want > 1:
+            want = plan.anchor_clip_frames(min(want, length - idx))
+        if idx + want > length:
+            log.warning("[MiniMaxDirector] '%s' would anchor past the end of the video "
+                        "(frame %d of %d) — skipped.",
+                        plan.seg_name(ev["seg"]), idx, length)
+            continue
+        try:
+            conditioning = _unpack(guide.execute(
+                positive=conditioning, latent=latent, frame_idx=idx,
+                vae=vae, image=fit(tensor[:want])))[0]
+        except Exception as e:
+            log.warning("[MiniMaxDirector] Could not anchor '%s' at frame %d: %s — the "
+                        "render continues without it.", plan.seg_name(ev["seg"]), idx, e)
+            continue
+        log.info("[MiniMaxDirector] Anchored '%s' at frame %d (%.2fs)%s.",
+                 plan.seg_name(ev["seg"]), idx, idx / MODEL_FPS,
+                 " as a %d frame clip" % want if want > 1 else "")
+
+    for anchor in audio_anchors:
+        if audio_vae is None:
+            # Not an error the way it is on the ref2va path: there the whole conditioning
+            # is references and a missing VAE means nothing can be sent, while here the
+            # video anchors and the mixdown are unaffected and only the guide is lost.
+            log.warning("[MiniMaxDirector] The audio track cannot guide the model without "
+                        "the audio VAE — connect minimax_h3_audio_vae to 'audio_vae', or "
+                        "turn the audio track off. The clips are still mixed into "
+                        "combined_audio.")
+            break
+        seg = dict(anchor["seg"])
+        head = float(anchor["head_trim_f"])
+        if head > 0:
+            # the part of the clip that falls before the window has already been heard
+            seg["trimStart"] = float(seg.get("trimStart", 0)) + head
+            seg["length"] = max(1.0, float(seg.get("length", 1)) - head)
+        clip = media.load_audio_segment(seg, fps)
+        if clip is None:
+            continue                      # load_audio_segment has already said why
+        idx = int(anchor["anchor_frame"])
+        try:
+            conditioning = _unpack(guide.execute(
+                positive=conditioning, latent=latent, frame_idx=idx,
+                audio_vae=audio_vae, audio=clip))[0]
+        except Exception as e:
+            log.warning("[MiniMaxDirector] Could not anchor the audio of '%s' at frame "
+                        "%d: %s — the render continues without it.",
+                        plan.seg_name(anchor["seg"]), idx, e)
+            continue
+        log.info("[MiniMaxDirector] Anchored the audio of '%s' at frame %d (%.2fs).",
+                 plan.seg_name(anchor["seg"]), idx, idx / MODEL_FPS)
+    return conditioning
 
 
 class _Unconnected:
@@ -659,8 +759,13 @@ class MiniMaxH3Director(io.ComfyNode):
                 ref_audios["ref_audio_%d" % len(ref_audios)] = clip_audio
 
             if first_frame is not None or last_frame is not None:
+                # The core ref2va node takes no first/last frame, so the opening and closing
+                # images reach the model the way every other ref2va image does: anchored at
+                # their own frame if that is what they are for, described as <Picture i> if
+                # they are not.
                 log.info("[MiniMaxDirector] ref2va has no first/last keyframe slot — the "
-                         "timeline keyframes were added as <Picture i> references instead.")
+                         "timeline images were anchored or added as <Picture i> references "
+                         "instead, depending on what each one is set to.")
                 first_frame = last_frame = None
 
         prompt = p["prompt"]
@@ -674,6 +779,26 @@ class MiniMaxH3Director(io.ComfyNode):
         log.debug("[MiniMaxDirector] prompt:\n%s", prompt)
 
         # --- conditioning ------------------------------------------------------------
+        # Both paths anchor; they differ in what they anchor. fl2va has no other use for a
+        # timeline image, so its middles are anchored on sight. ref2va does, so there the
+        # user says which images and clips are frames of the video and which are references,
+        # and the planner has already sorted them.
+        anchors = [e for e in p["events"] if e.get("anchor_frame") is not None]
+        audio_anchors = p.get("audio_anchors") or []
+        guide = add_guide()
+        if p["ref_mode_on"]:
+            anchors = anchors + load_clip_anchors(p.get("video_anchors") or [], fps, win_start)
+        if (anchors or audio_anchors) and guide is None:
+            what = " and ".join(
+                x for x in ("%d image(s) or clip(s)" % len(anchors) if anchors else "",
+                            "%d audio clip(s)" % len(audio_anchors) if audio_anchors
+                            else "") if x)
+            log.warning("[MiniMaxDirector] %s would be anchored inside the window, and this "
+                        "ComfyUI has no 'Add Guide for MiniMax H3' node to anchor them with "
+                        "— it arrived in 0.34.0. They were ignored: update ComfyUI, or set "
+                        "them back to references.", what)
+            anchors = audio_anchors = []
+
         if p["ref_mode_on"]:
             if (ref_audios or ref_video_audios) and audio_vae is None:
                 raise ValueError(
@@ -692,12 +817,6 @@ class MiniMaxH3Director(io.ComfyNode):
                 ref_audios=ref_audios or None,
             )
         else:
-            middles = [e for e in p["events"] if e["role"] == plan.ROLE_MIDDLE]
-            if middles:
-                log.warning("[MiniMaxDirector] %d timeline image(s) sit in the middle of the "
-                            "window. H3 only anchors keyframes at the first and last frame, so "
-                            "they were ignored — switch the toolbar to 'Refs ON (ref2va)' to "
-                            "use them as <Picture i> references.", len(middles))
             out = mm.MiniMaxH3ImageToVideo.execute(
                 clip=clip, vae=vae, prompt=prompt,
                 width=width, height=height, length=length,
@@ -726,6 +845,13 @@ class MiniMaxH3Director(io.ComfyNode):
             log.info("[MiniMaxDirector] %d audio clip(s) locked into the audio stream "
                      "(%s); the model generates the rest.", len(spans),
                      ", ".join("%.2f-%.2fs" % sp for sp in spans))
+        # On fl2va the first and last frame have slots of their own in the node above, and
+        # everything else is anchored here; on ref2va nothing has a slot and every frame
+        # comes through here. Either way it is the conditioning that node returned — Add
+        # Guide appends to the same keyframe list, so the two compose.
+        if anchors or audio_anchors:
+            conditioning = anchor_guides(guide, conditioning, latent, anchors, audio_anchors,
+                                         fit, vae, audio_vae, length, fps)
 
         chosen_model = pick_model(model, model_ref2va, p["ref_mode_on"])
         patched_model = _unpack(mm.MiniMaxH3SigmaShift.execute(
