@@ -19,12 +19,14 @@ Rules for you:
 
 1. Install it with ComfyUI Manager ("MiniMax H3 Director"), or put the pack into `ComfyUI/custom_nodes/` — download the release zip from
    https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/releases and unpack it, or
-   `git clone --branch v1.0.0 https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director`.
+   `git clone --branch v1.0.1 https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director`.
 2. Install the dependency with **ComfyUI's** Python (portable build: `python_embeded\python.exe`):
    `python -m pip install -r requirements.txt`.
 3. Restart ComfyUI and reload the browser with Ctrl+F5. ComfyUI must be **0.37.0 or newer**.
-4. Check: the start log has no import error for the pack; `GET /object_info/NGH3Director` answers; the input folder now
-   holds the `h3-example-*` files (copied on start; existing files are never overwritten).
+4. Check: the start log has no import error for the pack; `GET /object_info/NGH3Director` answers. The `h3-example-*`
+   files reach the input folder when an example workflow is opened in the browser (not on start; existing files are never
+   overwritten). Running an example through the API instead: first `POST /ng/example_media` with
+   `{"names": ["h3-example-hero.jpg", …]}`.
 
 ## 2 · Models
 

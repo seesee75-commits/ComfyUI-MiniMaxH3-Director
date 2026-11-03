@@ -71,6 +71,16 @@ assert.equal(host.children.length, 0, "removing the node removes its Studio");
   canvas.resizing_node = card;
   card.setSize([660, 1400]);
   assert.deepEqual(below.pos, [0, 1200], "the user's own drag moves nothing");
+  // a height that wobbles by a few pixels once pushed the nodes below on every upward step (issue #37)
+  canvas.resizing_node = null;
+  below.pos = [0, 1500];
+  for (const height of [1397, 1400, 1396, 1400, 1397, 1400]) card.setSize([660, height]);
+  assert.deepEqual(below.pos, [0, 1500], "a wobbling height moves nothing");
+  card.setSize([660, 1000]);
+  card.setSize([660, 1300]);
+  assert.deepEqual(below.pos, [0, 1500], "growing back to a height it had moves nothing");
+  card.setSize([660, 1450]);
+  assert.deepEqual(below.pos, [0, 1550], "only growth beyond the largest height so far pushes");
   globalThis.comfyAPI = saved;
 }
 // A split sends the user's own dialogue along: inline lines and spoken lines, by the speaker's name.

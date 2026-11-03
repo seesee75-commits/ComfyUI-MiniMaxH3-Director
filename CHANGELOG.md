@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.1 (2026-11-03)
+
+- **Example files are copied when you open an example, not on start** (#35). Opening an example workflow copies the
+  `h3-example-*` files it uses into ComfyUI's input folder (a file already there is kept); nothing else lands there, and
+  files you delete stay deleted until you open an example that needs them again. API users: `POST /ng/example_media`.
+- **Nodes below a card no longer drift down** (#37). A card's height can differ by a few pixels between two measurements
+  (browser zoom, display scaling); every upward step pushed the nodes below again. Only growth beyond the largest height
+  so far moves them now.
+- **Installs from the Manager without a GPU warning** (#36). The package no longer declares `GPU :: NVIDIA CUDA`:
+  ComfyUI's install check compares that against "CUDA" or "CPU" and reported a conflict on every machine. The pack runs
+  wherever ComfyUI runs MiniMax H3.
+
 ## 1.0.0 (2026-10-26)
 
 The H3 Director for videos of any length, with nine example workflows, their input files and an illustrated guide.

@@ -2,7 +2,6 @@
 from . import routes  # noqa: F401  (registers /ng/plan)
 from . import context_routes  # noqa: F401
 from . import analysis_routes  # noqa: F401
-from ..adapters import example_media
 from .chunk_node import NODES as _CHUNK
 from .context_nodes import NODES as _CONTEXT
 from .director_node import NODES as _DIRECTOR
@@ -18,7 +17,5 @@ from .control_node import NODES as _CONTROL
 from .storyboard_node import NODES as _STORYBOARD
 from .still_node import NODES as _STILL
 from .guide_node import NODES as _GUIDE
-
-example_media.install()
 
 NODES = _CONTEXT +_DIRECTOR + _CHUNK + _RENDER + _STUDIO + _PROVIDER + _CONNECTOR + _PRODUCT + _OUTPUT + _PREVIEW + _AI + _CONTROL + _STORYBOARD + _STILL + _GUIDE

@@ -6,7 +6,7 @@ from server import PromptServer
 
 import comfy.model_management
 
-from ..adapters import control_files, keys, lyrics_timing, model_files, models, presets, preview_media, waveform
+from ..adapters import control_files, example_media, keys, lyrics_timing, model_files, models, presets, preview_media, waveform
 from ..core import providers
 from ..core.context_build import item_from_widgets
 from ..core.presets import ContextPreset, widget_values
@@ -144,6 +144,18 @@ async def import_picture(request):
         data = await request.json()
         source = await asyncio.to_thread(control_files.import_picture, data["filename"], data["subfolder"], data["kind"])
         return web.json_response({"ok": True, "source": source})
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return web.json_response({"ok": False, "error": str(error)}, status=400)
+
+
+@PromptServer.instance.routes.post("/ng/example_media")
+async def copy_example_media(request):
+    """The example files a workflow being opened names, into the input folder (issue #35: not on start)."""
+    try:
+        names = (await request.json())["names"]
+        if not isinstance(names, list) or not all(isinstance(name, str) for name in names):
+            raise ValueError("names must be a list of file names")
+        return web.json_response({"ok": True, "copied": await asyncio.to_thread(example_media.copy, names)})
     except (OSError, ValueError, KeyError, TypeError) as error:
         return web.json_response({"ok": False, "error": str(error)}, status=400)
 

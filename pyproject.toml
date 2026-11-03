@@ -1,14 +1,13 @@
 [project]
 name = "minimaxh3-director"
 description = "Videos of any length with MiniMax H3: shots on a timeline, characters, voices, songs, storyboard and control videos, rendered part by part in ComfyUI's native loop. Nine example workflows and a guide; the Legacy timeline Director is included."
-version = "1.0.0"
+version = "1.0.1"
 license = { file = "LICENSE" }
 requires-python = ">=3.10"
 dependencies = ["opencv-python>=4.8"]
 classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
     "Operating System :: OS Independent",
-    "Environment :: GPU :: NVIDIA CUDA",
 ]
 
 [project.urls]

@@ -7,7 +7,7 @@ sound — picture and sound continue across every join.
 
 [![license](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 [![ComfyUI](https://img.shields.io/badge/ComfyUI-%E2%89%A5%200.37.0-1a1a1a)](https://github.com/comfyanonymous/ComfyUI)
-[![version](https://img.shields.io/badge/version-1.0.0-orange)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-1.0.1-orange)](CHANGELOG.md)
 
 ![A complete workflow](js/guide/images/wf2-overview.jpg)
 
@@ -63,19 +63,20 @@ Longer videos made with the Director: [3 minutes, References](https://youtu.be/H
 ## Installation
 
 1. **ComfyUI Manager:** search "MiniMax H3 Director" and install, or download **Source code (zip)** of
-   [v1.0.0](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/releases) and unpack it into
+   [v1.0.1](https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director/releases) and unpack it into
    `ComfyUI/custom_nodes/ComfyUI-MiniMaxH3-Director` — or clone the tag:
 
    ```bash
    cd ComfyUI/custom_nodes
-   git clone --branch v1.0.0 https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director
+   git clone --branch v1.0.1 https://github.com/seesee75-commits/ComfyUI-MiniMaxH3-Director
    ```
 
 2. Install the one dependency with ComfyUI's Python: `python -m pip install -r requirements.txt` (OpenCV).
 3. Restart ComfyUI and reload the browser (Ctrl+F5).
 
 The example files (pictures, a voice, a song, a walk video with its pose and mask) are copied into ComfyUI's `input`
-folder on start, named `h3-example-…`, so every example workflow opens ready to run.
+folder when you open an example workflow that uses them, named `h3-example-…`, so it opens ready to run. Nothing is
+copied on start; delete them when you no longer need them.
 
 ## Models
 
